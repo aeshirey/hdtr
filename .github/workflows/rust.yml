@@ -59,8 +59,8 @@ jobs:
           EXTRA_FILES: "README.md LICENSE-MIT LICENSE-APACHE"
       - name: List everything in the 'output' directory
         run: find output
-      - name: Strip Linux binary
-        run: strip output/hdtr
+      #- name: Strip Linux binary
+      #  run: strip output/hdtr
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v3
         with:
