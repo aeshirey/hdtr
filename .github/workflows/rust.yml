@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@master
       - name: Run tests
         run: cargo test --verbose
-      - name: Compile and release
+      - name: compile
         uses: rust-build/rust-build.action@v1.4.3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -34,5 +34,4 @@ jobs:
         with:
           name: Binary
           path: |
-            ${{ steps.compile.outputs.BUILT_ARCHIVE }}
-            ${{ steps.compile.outputs.BUILT_CHECKSUM }}
+            ${{ steps.compile.outputs.* }}
