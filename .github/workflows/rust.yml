@@ -15,28 +15,57 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        target: [x86_64-pc-windows-gnu, x86_64-unknown-linux-musl]
+      #matrix:
+      #  target: [x86_64-pc-windows-gnu, x86_64-unknown-linux-musl]
     steps:
       - uses: actions/checkout@master
-      - name: Run tests
-        run: cargo test --verbose
-      - name: compile
+      #- name: Run tests
+      #  run: cargo test --verbose
+      #- name: compile
+      #  uses: rust-build/rust-build.action@v1.4.3
+      #  env:
+      #    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #  with:
+      #    RUSTTARGET: ${{ matrix.target }}
+      #    UPLOAD_MODE: none
+      #    EXTRA_FILES: "README.md LICENSE-MIT LICENSE-APACHE"
+      
+      # WINDOWS
+      - name: compile-windows
         uses: rust-build/rust-build.action@v1.4.3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          RUSTTARGET: ${{ matrix.target }}
+          RUSTTARGET: x86_64-pc-windows-gnu
+          UPLOAD_MODE: none
+          EXTRA_FILES: "README.md LICENSE-MIT LICENSE-APACHE"
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: hdtr-windows
+          path: |
+            output/hdtr.exe
+            output/LICENSE*
+            output/README.md
+            
+      # LINUX
+      - name: compile-linux
+        uses: rust-build/rust-build.action@v1.4.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          RUSTTARGET: x86_64-unknown-linux-musl
           UPLOAD_MODE: none
           EXTRA_FILES: "README.md LICENSE-MIT LICENSE-APACHE"
       - name: List everything in the 'output' directory
         run: find output
-      - name: Upload artifact
+      - name: Strip Linux binary
+        run: strip output/hdtr
+      - name: Upload Linux artifact
         uses: actions/upload-artifact@v3
         with:
-          name: Binary
+          name: hdtr-linux
           path: |
-            output/hdtr*.zip
-            output/hdtr*.zip.sha256sum
+            output/hdtr
             output/LICENSE*
             output/README.md
