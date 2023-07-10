@@ -1,0 +1,211 @@
+use crate::{HdtrError, InputImage};
+use image::{DynamicImage, GenericImageView, Pixel, RgbImage};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+pub enum Mask {
+    Default,
+    Path(String),
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PipelineInputImage {
+    image: String,
+    mask: Option<String>,
+}
+
+impl PipelineInputImage {
+    pub(crate) fn load(&self) -> Result<(InputImage, DynamicImage), HdtrError> {
+        let image = InputImage::new(&self.image)?;
+
+        let w = image.im.width();
+        let h = image.im.height();
+
+        let mask_filename = match &self.mask {
+            Some(f) => f,
+            None => return Ok((image, default_mask(w, h))),
+        };
+
+        let mask = image::open(mask_filename)?;
+
+        // check the dimensions
+        let (mw, mh) = mask.dimensions();
+        if (w, h) != (mw, mh) {
+            let msg = format!(
+                "{} has dimensions ({w}, {h}) while its mask {mask_filename} has dimensions ({mw}, {mh})",
+                self.image
+            );
+            Err(HdtrError::HDTR(msg.into()))
+        } else {
+            Ok((image, mask))
+        }
+    }
+}
+
+impl<S: Into<String>> From<S> for PipelineInputImage {
+    fn from(value: S) -> Self {
+        PipelineInputImage {
+            image: value.into(),
+            mask: None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum MaskType {
+    VerticalFlat,
+    HorizontalFlat,
+    Logistic { k: f64 },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Step {
+    Load { filenames: Vec<PipelineInputImage> },
+    GenerateMasks(MaskType),
+    NormalizeMasks(bool),
+    SaveMasks,
+    Save(String),
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Pipeline {
+    pub steps: Vec<Step>,
+}
+
+impl Pipeline {
+    pub fn save_example<P: AsRef<Path>>(
+        destination: P,
+        images: Option<Vec<String>>,
+    ) -> Result<(), std::io::Error> {
+        let filenames = match images {
+            Some(fs) => fs.into_iter().map(|f| f.into()).collect(),
+            None => vec![
+                "image01.png".into(),
+                "image02.png".into(),
+                "image03.png".into(),
+                "image04.png".into(),
+            ],
+        };
+        let load_images = Step::Load { filenames };
+
+        let generate_masks = Step::GenerateMasks(MaskType::VerticalFlat);
+
+        let save = Step::Save("blended.png".to_string());
+
+        let ex = Pipeline {
+            steps: vec![
+                load_images,
+                generate_masks,
+                Step::GenerateMasks(MaskType::Logistic { k: 0.01 }),
+                Step::NormalizeMasks(true),
+                save,
+            ],
+        };
+        let json = serde_json::to_string_pretty(&ex).unwrap();
+
+        std::fs::write(destination, json)?;
+
+        Ok(())
+    }
+
+    /// Validates that the pipeline seems okay
+    pub fn validate(&self) -> Result<(), HdtrError> {
+        let mut has_load = false;
+        let mut has_save = false;
+        let mut has_load_then_save = false;
+
+        for step in &self.steps {
+            match step {
+                Step::Load { filenames } => {
+                    for file in filenames {
+                        if !std::path::Path::new(&file.image).exists() {
+                            return Err(HdtrError::InputFileDoesNotExist(file.image.to_string()));
+                        }
+
+                        if let Some(mask) = &file.mask {
+                            if !std::path::Path::new(mask).exists() {
+                                return Err(HdtrError::InputFileDoesNotExist(mask.to_string()));
+                            }
+                        }
+
+                        has_load = true;
+                    }
+                }
+                Step::GenerateMasks(_) => {}
+                Step::NormalizeMasks(_) => {}
+                Step::SaveMasks => has_save = true,
+                Step::Save(_) => {
+                    has_load_then_save = has_load;
+                    has_save = true;
+                }
+            }
+        }
+
+        if !has_load {
+            Err(HdtrError::NoInputFilesSpecified)
+        } else if !has_save {
+            Err(HdtrError::NoSaveOperationSpecified)
+        } else if !has_load_then_save {
+            Err(HdtrError::PipelineError(
+                "'load' step must come before 'save' step".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn execute(&self) -> Result<(), HdtrError> {
+        // validate the pipeline first
+        self.validate()?;
+
+        let load_step = self
+            .steps
+            .iter()
+            .find(|step| matches!(step, Step::Load { .. }))
+            .ok_or(HdtrError::PipelineError("No 'load' step was found".into()))?;
+        let Step::Load { filenames } = load_step else { unreachable!() };
+
+        let mut it = filenames.into_iter();
+
+        let (im, m) = 
+
+        let mut images = Vec::new();
+        let mut masks = Vec::new();
+        for filename in filenames {
+            let (im, m) = filename.load()?;
+
+            images.push(im);
+            masks.push(m);
+        }
+
+        for step in &self.steps {
+            match step {
+                Step::Load { filenames } => {}
+                Step::GenerateMasks(_) => todo!(),
+                Step::NormalizeMasks(_) => todo!(),
+                Step::SaveMasks => todo!(),
+                Step::Save(_) => todo!(),
+            }
+        }
+        todo!()
+    }
+}
+
+#[test]
+fn test_save_example() {
+    Pipeline::save_example("test_pipeline.json", None).unwrap();
+}
+
+fn default_mask(width: u32, height: u32) -> DynamicImage {
+    let mut canvas = RgbImage::new(width, height);
+    let black = *Pixel::from_slice(&[0, 0, 0]);
+
+    for x in 0..width {
+        for y in 0..height {
+            canvas.put_pixel(x, y, black);
+        }
+    }
+
+    DynamicImage::ImageRgb8(canvas)
+}
