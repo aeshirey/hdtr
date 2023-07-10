@@ -29,10 +29,14 @@ jobs:
           RUSTTARGET: ${{ matrix.target }}
           UPLOAD_MODE: none
           EXTRA_FILES: "README.md LICENSE-MIT LICENSE-APACHE"
-      - name: Find files
-        run: find .
+      - name: List everything in the 'output' directory
+        run: find output
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
           name: Binary
-          path: target/release/hdtr*
+          path: |
+            output/hdtr*.zip
+            output/hdtr*.zip.sha256sum
+            output/LICENSE*
+            output/README.md
