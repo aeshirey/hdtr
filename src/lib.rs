@@ -1,5 +1,6 @@
 use image::{DynamicImage, GenericImage, GenericImageView, Pixel, RgbImage};
 use pipeline::MaskType;
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
 mod err;
@@ -97,48 +98,69 @@ impl InputImages {
         };
 
         // Modify every mask to be [0,255] according to how much it contributed
-        for x in 0..self.width {
-            for y in 0..self.height {
-                let idx = (self.width * y + x) as usize;
-                let denominator = sums[idx];
+        let mut masks = (0..self.masks.len())
+            .into_par_iter()
+            .map(|i| {
+                let mask = RgbImage::new(self.width, self.height);
+                let mut mask = DynamicImage::ImageRgb8(mask);
+                for x in 0..self.width {
+                    for y in 0..self.height {
+                        let idx = (self.width * y + x) as usize;
+                        let denominator = sums[idx];
 
-                for i in 0..self.masks.len() {
-                    let numerator = self.masks[i].get_pixel(x, y).to_rgb().0[0];
+                        let numerator = self.masks[i].get_pixel(x, y).to_rgb().0[0];
 
-                    let scaled = (255. * numerator as f64 / denominator as f64) as u8;
-                    let rgb = [scaled, scaled, scaled, 255];
-                    let pixel = Pixel::from_slice(&rgb[..]);
-                    self.masks[i].put_pixel(x, y, *pixel);
+                        let scaled = (255. * numerator as f64 / denominator as f64) as u8;
+                        let rgb = [scaled, scaled, scaled, 255];
+                        let pixel = Pixel::from_slice(&rgb[..]);
+                        mask.put_pixel(x, y, *pixel);
+                    }
                 }
-            }
-        }
+                (i, mask)
+            })
+            .collect::<Vec<_>>();
+        masks.sort_by_key(|(i, _)| *i);
+
+        self.masks = masks.into_iter().map(|(_, mask)| mask).collect();
     }
 
     pub fn save<P: AsRef<Path>>(&self, destination: P) -> Result<(), HdtrError> {
         let mut canvas = RgbImage::new(self.width, self.height);
 
-        for x in 0..self.width {
-            for y in 0..self.height {
-                let (mut r_out, mut g_out, mut b_out) = (0., 0., 0.);
+        let pixels = (0..self.width)
+            .into_par_iter()
+            .map(|x| {
+                let mut pixels = Vec::with_capacity(self.height as usize);
+                for y in 0..self.height {
+                    let (mut r_out, mut g_out, mut b_out) = (0., 0., 0.);
 
-                for i in 0..self.masks.len() {
-                    // Input pixel
-                    let p = self.images[i].im.get_pixel(x, y).to_rgb();
-                    // mask pixel
-                    let pm = self.masks[i].get_pixel(x, y).to_rgb();
+                    for i in 0..self.masks.len() {
+                        // Input pixel
+                        let p = self.images[i].im.get_pixel(x, y).to_rgb();
+                        // mask pixel
+                        let pm = self.masks[i].get_pixel(x, y).to_rgb();
 
-                    // Add to the output the value of this pixel multiplied by [0, 1]
-                    r_out += p[0] as f64 * (pm[0] as f64 / 255.);
-                    g_out += p[1] as f64 * (pm[1] as f64 / 255.);
-                    b_out += p[2] as f64 * (pm[2] as f64 / 255.);
+                        // Add to the output the value of this pixel multiplied by [0, 1]
+                        r_out += p[0] as f64 * (pm[0] as f64 / 255.);
+                        g_out += p[1] as f64 * (pm[1] as f64 / 255.);
+                        b_out += p[2] as f64 * (pm[2] as f64 / 255.);
+                    }
+
+                    let r = r_out as u8;
+                    let g = g_out as u8;
+                    let b = b_out as u8;
+                    let rgb = [r, g, b];
+                    let p: image::Rgb<u8> = *Pixel::from_slice(&rgb[..]);
+                    //canvas.put_pixel(x, y, *p);
+                    pixels.push(p);
                 }
+                pixels
+            })
+            .collect::<Vec<_>>();
 
-                let r = r_out as u8;
-                let g = g_out as u8;
-                let b = b_out as u8;
-                let rgb = [r, g, b];
-                let p = Pixel::from_slice(&rgb[..]);
-                canvas.put_pixel(x, y, *p);
+        for (x, pxs) in pixels.into_iter().enumerate() {
+            for (y, p) in pxs.into_iter().enumerate() {
+                canvas.put_pixel(x as u32, y as u32, p);
             }
         }
 
@@ -148,24 +170,29 @@ impl InputImages {
     }
 
     pub fn save_masks(&self) -> Result<(), HdtrError> {
-        for (im, m) in self.images.iter().zip(&self.masks) {
-            let parent = im
-                .path
-                .parent()
-                .expect("Couldn't get parent directory for image");
+        let pairs = self.images.iter().zip(&self.masks).collect::<Vec<_>>();
 
-            let file_stem = im
-                .path
-                .file_stem()
-                .and_then(|osstr| osstr.to_str())
-                .expect("Couldn't get file name for image");
+        pairs
+            .into_par_iter()
+            .map(|(im, m)| {
+                let parent = im
+                    .path
+                    .parent()
+                    .expect("Couldn't get parent directory for image");
 
-            let mask_filename = format!("{file_stem}_mask.png");
-            let mask_path = parent.join(mask_filename);
+                let file_stem = im
+                    .path
+                    .file_stem()
+                    .and_then(|osstr| osstr.to_str())
+                    .expect("Couldn't get file name for image");
 
-            m.save(&mask_path)
-                .map_err(|_| HdtrError::ErrorWritingFile(mask_path))?;
-        }
+                let mask_filename = format!("{file_stem}_mask.png");
+                let mask_path = parent.join(mask_filename);
+
+                m.save(&mask_path)
+                    .map_err(|_| HdtrError::ErrorWritingFile(mask_path))
+            })
+            .collect::<Result<Vec<()>, _>>()?;
 
         Ok(())
     }
@@ -179,9 +206,15 @@ impl InputImages {
     }
 
     pub(crate) fn generate_masks(&mut self, mask_type: MaskType) {
-        for i in 0..self.masks.len() {
-            self.masks[i] = self.generate_mask(i, mask_type);
-        }
+        let indexes = (0..self.masks.len()).collect::<Vec<_>>();
+
+        let mut masks = indexes
+            .into_par_iter()
+            .map(|i| (i, self.generate_mask(i, mask_type)))
+            .collect::<Vec<_>>();
+        masks.sort_by_key(|(idx, _)| *idx);
+
+        self.masks = masks.into_iter().map(|(_, m)| m).collect();
     }
 
     fn generate_mask(&self, image_num: usize, mask_type: MaskType) -> DynamicImage {

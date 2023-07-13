@@ -1,5 +1,6 @@
 use crate::{HdtrError, InputImage, InputImages};
 use image::{DynamicImage, GenericImageView, Pixel, RgbImage};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -124,31 +125,41 @@ impl Pipeline {
     pub fn execute(&self) -> Result<(), HdtrError> {
         self.validate()?;
 
-        let mut it = self.filenames.iter();
+        let s = std::time::Instant::now();
+        let it = self.filenames.iter().enumerate().collect::<Vec<_>>();
+        let mut loaded = it
+            .into_par_iter()
+            .map(|(idx, filename)| filename.load().map(|img_mask| (idx, img_mask)))
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let (im, m) = it.next().unwrap().load()?;
+        println!("Loaded {} images in {:?}", loaded.len(), s.elapsed());
+
+        loaded.sort_by_key(|(idx, _)| *idx);
+
+        let mut it = loaded.into_iter().map(|(_, img_mask)| img_mask);
+
+        let (im, m) = it
+            .next()
+            .ok_or(HdtrError::HDTR("No images were loaded".into()))?;
 
         let expected = im.im.dimensions();
 
         let mut images = vec![im];
         let mut masks = vec![m];
 
-        for filename in it {
-            let (im, m) = filename.load()?;
-
-            let received = im.im.dimensions();
+        for (img, mask) in it {
+            let received = img.im.dimensions();
 
             if expected != received {
                 return Err(HdtrError::DimensionMismatch {
                     expected,
                     received,
-                    details: format!("{} has different dimensions than expected", filename.image)
-                        .into(),
+                    details: "Image has different dimensions than expected".into(),
                 });
             }
 
-            images.push(im);
-            masks.push(m);
+            images.push(img);
+            masks.push(mask);
         }
 
         let mut images = InputImages {
@@ -159,18 +170,30 @@ impl Pipeline {
         };
 
         if let Some(mask_type) = self.generate_masks {
+            let s = std::time::Instant::now();
             images.generate_masks(mask_type);
+            println!(
+                "Generated {} masks in {:?}",
+                images.masks.len(),
+                s.elapsed()
+            );
         }
 
         if self.normalize_masks == Some(true) {
+            let s = std::time::Instant::now();
             images.normalize_masks();
+            println!("Normalized masks in {:?}", s.elapsed());
         }
 
         if self.save_masks == Some(true) {
+            let s = std::time::Instant::now();
             images.save_masks()?;
+            println!("Saved masks in {:?}", s.elapsed());
         }
 
+        let s = std::time::Instant::now();
         images.save(&self.save)?;
+        println!("Saved {} in {:?}", self.save, s.elapsed());
 
         Ok(())
     }
